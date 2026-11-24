@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Playa Manta">
+<meta name="theme-color" content="#0b6e8a">
+<title>Playa Manta</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;font-family:-apple-system,Arial,sans-serif;background:#eaf6f9;color:#12303a;padding:env(safe-area-inset-top) 14px 30px}
+h1{font-size:22px;margin:16px 0 2px}
+.sub{font-size:13px;color:#4a6b75;margin-bottom:10px;text-transform:capitalize}
+.tabs,.seg{display:flex;gap:6px;margin-bottom:12px}
+.tabs button,.seg button{flex:1;padding:10px 4px;font-size:14px;border:1px solid #b8d8e0;background:#fff;border-radius:12px;color:#12303a}
+.tabs button.on,.seg button.on{background:#0b6e8a;color:#fff;border-color:#0b6e8a}
+select{width:100%;padding:12px;font-size:16px;border-radius:12px;border:1px solid #b8d8e0;background:#fff;margin-bottom:12px}
+.card{background:#fff;border-radius:16px;padding:14px;margin-bottom:12px;box-shadow:0 2px 6px rgba(0,0,0,.06)}
+.best{font-size:18px;font-weight:700;margin:2px 0 6px}
+.tag{display:inline-block;padding:3px 10px;border-radius:20px;color:#fff;font-size:12px;font-weight:700;white-space:nowrap}
+.good{background:#1f9d55}.mid{background:#e0a100}.bad{background:#d64545}
+.row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 0;border-bottom:1px solid #eef3f5;font-size:14px}
+.row:last-child{border:0}
+.link{cursor:pointer}
+.det{font-size:11px;color:#5d7882}
+.warn{background:#fff4d6;border-radius:12px;padding:10px;font-size:13px;margin-bottom:12px}
+#map{height:62vh;border-radius:16px;overflow:hidden;margin-bottom:8px}
+iframe{width:100%;height:520px;border:0;border-radius:16px;background:#fff}
+.et{background:#fff;border:0;box-shadow:0 1px 3px rgba(0,0,0,.3);font-size:11px;font-weight:700;padding:1px 5px}
+.pb{margin-top:6px;padding:6px 10px;border:0;border-radius:8px;background:#0b6e8a;color:#fff;font-size:13px}
+</style>
+</head>
+<body>
+<h1>🏖️ Playa Manta</h1>
+<div class="sub" id="fecha"></div>
+
+<div class="tabs">
+  <button data-tab="pron" class="on">Pronóstico</button>
+  <button data-tab="mapa">Mapa</button>
+  <button data-tab="windy">Windy</button>
+</div>
+
+<section id="t-pron">
+  <select id="playa"></select>
+  <div class="seg" id="dias">
+    <button data-d="0" class="on">Hoy</button>
+    <button data-d="1">Mañana</button>
+  </div>
+  <div class="card" id="mejor">Calculando...</div>
+  <div class="warn" id="uv" hidden></div>
+  <div class="card" id="horas"></div>
+  <div class="card" id="ranking"></div>
+  <div class="det" id="fuentes"></div>
+</section>
+
+<section id="t-mapa" hidden>
+  <div id="map"></div>
+  <div class="det">El color de cada punto es la mejor ventana de 2 horas del día elegido: verde buen momento, amarillo regular, rojo mejor no ir, gris cargando. Toca un punto para ver el detalle.</div>
+</section>
+
+<section id="t-windy" hidden>
+  <div class="card"><b id="windyTitulo"></b><div class="det">Mapa en vivo de Windy (modelo ECMWF) centrado en la playa elegida.</div></div>
+  <div class="seg" id="capas">
+    <button data-c="waves" class="on">Olas</button>
+    <button data-c="wind">Viento</button>
+    <button data-c="rain">Lluvia</button>
+  </div>
+  <iframe id="windy" title="Windy" loading="lazy"></iframe>
+</section>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// ===== CONFIGURACIÓN (aquí puedes cambiar playas y umbrales) =====
+// Coordenadas de Liguiqui, La Botada, San Lorenzo, Santa Rosa y San Mateo tomadas de códigos Plus Code.
+// Murciélago, Barbasquillo y Las Piñas son aproximadas: si un punto cae mal en el mapa, corrige lat y lon aquí.
+const PLAYAS = {
+  "Murciélago":   {lat:-0.9425, lon:-80.7310},
+  "Barbasquillo": {lat:-0.9360, lon:-80.7458},
+  "San Mateo":    {lat:-0.9561, lon:-80.8113},
+  "Liguiqui":     {lat:-1.0263, lon:-80.8824},
+  "La Botada":    {lat:-1.0561, lon:-80.9069},
+  "San Lorenzo":  {lat:-1.0640, lon:-80.9093},
+  "Las Piñas":    {lat:-1.0850, lon:-80.9020},
+  "Santa Rosa":   {lat:-1.1238, lon:-80.8875}
+};
+const MODELOS = ['best_match','ecmwf_ifs025','gfs_seamless'];
+const TZ = 'America%2FGuayaquil';
+const HORA_INI = 6, HORA_FIN = 17;
+// Puntos mar adentro que se prueban si el punto exacto no tiene datos de oleaje [dlat, dlon]
+const OFFSETS = [[0,0],[0,-0.08],[0.08,0],[-0.08,-0.08],[0,-0.2],[0.2,0]];
+const COLORES = {good:'#1f9d55', mid:'#e0a100', bad:'#d64545'};
+
+const cache = {};
+const errores = {};
+let playaSel = Object.keys(PLAYAS)[0];
+let dia = 0;
+let capa = 'waves';
+
+// ===== LÓGICA =====
+const num = v => (v === null || v === undefined || isNaN(v)) ? null : +v;
+const fmt = (v, d=0) => v === null || v === undefined ? '—' : (+v).toFixed(d);
+function mediana(a){
+  a = a.filter(v => v !== null && v !== undefined && !isNaN(v)).sort((x,y) => x-y);
+  if(!a.length) return null;
+  const m = a.length >> 1;
+  return a.length % 2 ? a[m] : (a[m-1] + a[m]) / 2;
+}
+function indice(t){ const o = {}; t.forEach((x,i) => o[x] = i); return o; }
+function val(c, k, j){ const a = c.h[k] || c.h[k + '_' + c.m]; return a ? num(a[j]) : null; }
+
+async function getJSON(url){
+  const r = await fetch(url);
+  if(!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+
+function puntaje(h){
+  let p = 100;
+  if(h.lluvia !== null) p -= Math.min(50, h.lluvia * 25);                     // lluvia mm/h
+  if(h.nubes !== null) p -= h.nubes > 70 ? 15 : h.nubes > 40 ? 6 : 0;         // nubosidad %
+  if(h.temp !== null){
+    if(h.temp < 23) p -= (23 - h.temp) * 5;                                   // frío
+    if(h.temp > 33) p -= (h.temp - 33) * 5;                                   // calor extremo
+  }
+  if(h.viento !== null && h.viento > 25) p -= Math.min(25, (h.viento - 25) * 1.5); // viento km/h
+  if(h.ola !== null && h.ola > 1.5) p -= Math.min(30, (h.ola - 1.5) * 20);    // oleaje m
+  if(h.marea !== null && h.marea > 0.9) p -= 6;                               // marea alta
+  return Math.max(0, Math.round(p));
+}
+function etiqueta(p){ return p >= 70 ? ['Buen momento','good'] : p >= 45 ? ['Regular','mid'] : ['Mejor no ir','bad']; }
+
+async function fetchClima(p){
+  const vars = 'temperature_2m,precipitation,cloud_cover,wind_speed_10m,uv_index';
+  const res = await Promise.allSettled(MODELOS.map(m =>
+    getJSON(`https://api.open-meteo.com/v1/forecast?latitude=${p.lat}&longitude=${p.lon}&hourly=${vars}&models=${m}&timezone=${TZ}&forecast_days=2`)
+      .then(j => ({m, h:j.hourly}))
+  ));
+  return res.filter(r => r.status === 'fulfilled' && r.value.h && r.value.h.time)
+            .map(r => ({m:r.value.m, h:r.value.h, idx:indice(r.value.h.time)}));
+}
+
+async function fetchMar(p){
+  const lats = OFFSETS.map(o => (p.lat + o[0]).toFixed(4)).join(',');
+  const lons = OFFSETS.map(o => (p.lon + o[1]).toFixed(4)).join(',');
+  try{
+    const j = await getJSON(`https://marine-api.open-meteo.com/v1/marine?latitude=${lats}&longitude=${lons}&hourly=wave_height,sea_level_height_msl&timezone=${TZ}&forecast_days=2`);
+    const arr = Array.isArray(j) ? j : [j];
+    for(const a of arr){
+      if(a.hourly && a.hourly.wave_height && a.hourly.wave_height.some(v => v !== null)) return a.hourly;
+    }
+    return null;
+  }catch(e){ return null; }
+}
+
+async function evaluar(nombre){
+  if(cache[nombre]) return cache[nombre];
+  const p = PLAYAS[nombre];
+  const [cl, mar] = await Promise.all([fetchClima(p), fetchMar(p)]);
+  if(!cl.length) throw new Error('sin datos');
+  const tiempos = cl[0].h.time;
+  const fechas = [...new Set(tiempos.map(t => t.slice(0,10)))];
+  const mIdx = mar ? indice(mar.time) : {};
+  const horas = [];
+  tiempos.forEach(t => {
+    const hr = +t.slice(11,13);
+    if(hr < HORA_INI || hr > HORA_FIN) return;
+    const vs = cl.map(c => {
+      const j = c.idx[t];
+      if(j === undefined) return null;
+      const g = k => val(c, k, j);
+      return {temp:g('temperature_2m'), lluvia:g('precipitation'), nubes:g('cloud_cover'), viento:g('wind_speed_10m'), uv:g('uv_index')};
+    }).filter(Boolean);
+    if(!vs.length) return;
+    const k = mIdx[t];
+    const nivel = mar && mar.sea_level_height_msl ? mar.sea_level_height_msl : null;
+    const ola = mar && k !== undefined ? num(mar.wave_height[k]) : null;
+    const marea = nivel && k !== undefined ? num(nivel[k]) : null;
+    const prev = nivel && k > 0 ? num(nivel[k-1]) : null;
+    const tend = marea !== null && prev !== null ? (marea > prev ? '↑' : '↓') : '';
+    const ps = vs.map(v => puntaje({...v, ola, marea}));
+    const prom = ps.reduce((a,b) => a + b, 0) / ps.length;
+    const sd = Math.sqrt(ps.reduce((a,b) => a + (b - prom) ** 2, 0) / ps.length);
+    const med = key => mediana(vs.map(v => v[key]));
+    horas.push({hr, dia:fechas.indexOf(t.slice(0,10)), temp:med('temp'), lluvia:med('lluvia'), nubes:med('nubes'),
+      viento:med('viento'), uv:med('uv'), ola, marea, tend, p:Math.round(prom), sd, n:vs.length});
+  });
+  return cache[nombre] = {horas, modelos:cl.length, oleaje: !!mar};
+}
+
+// mejor ventana de 2 horas seguidas
+function ventana(hs){
+  let mejor = null;
+  for(let i = 0; i < hs.length - 1; i++){
+    if(hs[i+1].hr !== hs[i].hr + 1) continue;
+    const s = (hs[i].p + hs[i+1].p) / 2;
+    if(!mejor || s > mejor.s) mejor = {s, a:hs[i].hr, b:hs[i+1].hr + 1, sd:(hs[i].sd + hs[i+1].sd) / 2, n:Math.min(hs[i].n, hs[i+1].n)};
+  }
+  return mejor;
+}
+function confianza(w){
+  if(w.n < 2) return 'Confianza baja (1 modelo)';
+  const c = w.sd < 7 ? 'alta' : w.sd < 14 ? 'media' : 'baja';
+  return `Confianza ${c} (${w.n} modelos)`;
+}
+
+// ===== INTERFAZ =====
+const $ = id => document.getElementById(id);
+const sel = $('playa');
+Object.keys(PLAYAS).forEach(n => { const o = document.createElement('option'); o.value = o.textContent = n; sel.appendChild(o); });
+sel.onchange = () => elegir(sel.value);
+
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => mostrar(b.dataset.tab));
+document.querySelectorAll('#dias button').forEach(b => b.onclick = () => {
+  dia = +b.dataset.d;
+  document.querySelectorAll('#dias button').forEach(x => x.classList.toggle('on', x === b));
+  renderPron(); renderRanking(); pintarMapa();
+});
+document.querySelectorAll('#capas button').forEach(b => b.onclick = () => {
+  capa = b.dataset.c;
+  document.querySelectorAll('#capas button').forEach(x => x.classList.toggle('on', x === b));
+  cargarWindy();
+});
+
+function mostrar(t){
+  ['pron','mapa','windy'].forEach(x => $('t-' + x).hidden = x !== t);
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
+  if(t === 'mapa') initMapa();
+  if(t === 'windy') cargarWindy();
+}
+
+function elegir(n){
+  playaSel = n; sel.value = n;
+  mostrar('pron');
+  cargarSel();
+}
+
+function renderPron(){
+  const d = cache[playaSel];
+  if(!d){
+    $('mejor').textContent = errores[playaSel] ? 'No se pudo cargar. Revisa tu conexión y recarga.' : 'Cargando datos...';
+    $('horas').innerHTML = ''; $('uv').hidden = true;
+    return;
+  }
+  const hs = d.horas.filter(h => h.dia === dia);
+  const w = ventana(hs);
+  if(!w){ $('mejor').textContent = 'Sin datos para este día.'; $('horas').innerHTML = ''; return; }
+  const [txt, cls] = etiqueta(w.s);
+  $('mejor').innerHTML = `<div class="det">Mejor ventana · ${playaSel}</div><div class="best">${w.a}:00 a ${w.b}:00</div><span class="tag ${cls}">${txt} · ${Math.round(w.s)}/100</span><div class="det" style="margin-top:6px">${confianza(w)}</div>`;
+  const uvMax = Math.max(...hs.map(h => h.uv === null ? 0 : h.uv));
+  $('uv').hidden = !(uvMax >= 8);
+  if(uvMax >= 8) $('uv').textContent = `☀️ UV máximo ${uvMax.toFixed(0)}: usa protector solar y evita el mediodía.`;
+  $('horas').innerHTML = hs.map(h => {
+    const [t, c] = etiqueta(h.p);
+    const marea = h.marea === null ? '' : ` · marea ${h.marea > 0 ? '+' : ''}${h.marea.toFixed(1)} m ${h.tend}`;
+    return `<div class="row"><div><b>${h.hr}:00</b><div class="det">${fmt(h.temp)}°C · viento ${fmt(h.viento)} km/h · olas ${fmt(h.ola,1)} m · lluvia ${fmt(h.lluvia,1)} mm${marea}</div></div><span class="tag ${c}">${t}</span></div>`;
+  }).join('');
+  $('fuentes').textContent = `Clima: Open-Meteo con ${d.modelos} modelo(s) (mejor estimación, ECMWF y GFS). Oleaje y marea: Open-Meteo Marine${d.oleaje ? '' : ' (sin datos en este punto)'}. Para verificar a ojo, mira la pestaña Windy.`;
+}
+
+function renderRanking(){
+  const filas = Object.keys(PLAYAS).map(n => ({n, w: cache[n] ? ventana(cache[n].horas.filter(h => h.dia === dia)) : null}));
+  filas.sort((a,b) => (b.w ? b.w.s : -1) - (a.w ? a.w.s : -1));
+  $('ranking').innerHTML = `<div class="det">Ranking de playas · ${dia === 0 ? 'hoy' : 'mañana'}</div>` + filas.map(f => {
+    if(!f.w) return `<div class="row"><div>${f.n}</div><span class="det">${errores[f.n] ? 'sin datos' : 'cargando…'}</span></div>`;
+    const [t, c] = etiqueta(f.w.s);
+    return `<div class="row link" data-n="${f.n}"><div><b>${f.n}</b><div class="det">${f.w.a}:00 a ${f.w.b}:00</div></div><span class="tag ${c}">${t} · ${Math.round(f.w.s)}</span></div>`;
+  }).join('');
+  $('ranking').querySelectorAll('.link').forEach(e => e.onclick = () => elegir(e.dataset.n));
+}
+
+// ----- Mapa (Leaflet + OpenStreetMap) -----
+let map = null; const marcas = {};
+function initMapa(){
+  if(typeof L === 'undefined'){ $('map').innerHTML = '<div class="card">No se pudo cargar el mapa. Revisa tu conexión.</div>'; return; }
+  if(!map){
+    map = L.map('map');
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:18, attribution:'© OpenStreetMap'}).addTo(map);
+    const pts = [];
+    Object.entries(PLAYAS).forEach(([n,p]) => {
+      const m = L.circleMarker([p.lat, p.lon], {radius:11, color:'#fff', weight:2, fillColor:'#7a8a90', fillOpacity:.95}).addTo(map);
+      m.bindTooltip(n, {permanent:true, direction:'top', offset:[0,-8], className:'et'});
+      marcas[n] = m; pts.push([p.lat, p.lon]);
+    });
+    map.fitBounds(pts, {padding:[30,30]});
+    pintarMapa();
+  }
+  setTimeout(() => map.invalidateSize(), 50);
+}
+function pintarMapa(){
+  if(!map) return;
+  Object.entries(marcas).forEach(([n,m]) => {
+    const d = cache[n];
+    const w = d ? ventana(d.horas.filter(h => h.dia === dia)) : null;
+    const info = w ? etiqueta(w.s) : null;
+    m.setStyle({fillColor: info ? COLORES[info[1]] : '#7a8a90'});
+    m.bindPopup(`<b>${n}</b><br>${w ? `${w.a}:00 a ${w.b}:00 · ${info[0]} (${Math.round(w.s)})` : 'Cargando…'}<br><button class="pb" onclick="elegir('${n}')">Ver pronóstico</button>`);
+  });
+}
+
+// ----- Windy (mapa incrustado, sin clave) -----
+function cargarWindy(){
+  const p = PLAYAS[playaSel];
+  $('windyTitulo').textContent = playaSel;
+  $('windy').src = `https://embed.windy.com/embed2.html?lat=${p.lat}&lon=${p.lon}&detailLat=${p.lat}&detailLon=${p.lon}&width=650&height=450&zoom=10&level=surface&overlay=${capa}&product=ecmwf&menu=&message=true&marker=true&calendar=now&pressure=&type=map&location=coordinates&detail=true&metricWind=km%2Fh&metricTemp=%C2%B0C&radarRange=-1`;
+}
+
+// ----- Arranque -----
+async function cargarSel(){
+  renderPron();
+  try{ await evaluar(playaSel); }catch(e){ errores[playaSel] = true; }
+  renderPron(); renderRanking(); pintarMapa();
+}
+async function arranque(){
+  $('fecha').textContent = new Date().toLocaleDateString('es-EC', {weekday:'long', day:'numeric', month:'long'});
+  renderRanking();
+  await cargarSel();
+  for(const n of Object.keys(PLAYAS).filter(x => x !== playaSel)){
+    try{ await evaluar(n); }catch(e){ errores[n] = true; }
+    renderRanking(); pintarMapa();
+  }
+}
+arranque();
+</script>
+</body>
+</html>
